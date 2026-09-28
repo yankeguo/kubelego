@@ -23,8 +23,8 @@
 | `KUBELEGO_ACCEPT_TOS` | 是 | 必须为 `true`，表示接受 CA 服务条款 |
 | `KUBELEGO_DOMAINS` | 是 | 逗号分隔的域名。第一个域名作为证书 Common Name，并生成默认 Secret 名 |
 | `KUBELEGO_DNS_PROVIDER` | 是 | lego 的 DNS provider 名称，与 `lego --dns` 相同，包含全部内置 provider 和别名 |
-| `KUBELEGO_STATE_SECRET` | 否 | 保存账号和证书状态的 Secret，`name` 或 `namespace/name`。默认 `<当前命名空间>/<第一个域名>-state` |
-| `KUBELEGO_CERT_SECRET` | 否 | TLS Secret，格式同上。默认 `<当前命名空间>/<第一个域名>` |
+| `KUBELEGO_STATE_SECRET` | 否 | 保存账号和证书状态的 Secret，`name` 或 `namespace/name`。默认 `<当前命名空间>/<第一个域名>-state`，域名里的 `.` 和其他分隔符会换成 `-` |
+| `KUBELEGO_CERT_SECRET` | 否 | TLS Secret，格式同上。默认 `<当前命名空间>/<第一个域名>`，同样把分隔符换成 `-` |
 | `KUBELEGO_CERT_NAMESPACES` | 否 | 逗号分隔的命名空间通配。`*` 匹配任意长度，`?` 匹配一个字符。`*` 表示所有命名空间 |
 | `KUBELEGO_SERVER` | 否 | ACME 目录 URL，或 lego 的 CA 代码（`letsencrypt`、`letsencrypt-staging`、`zerossl` 等）。默认 Let's Encrypt 生产环境 |
 | `KUBELEGO_KEY_TYPE` | 否 | `ec256`（默认）、`ec384`、`rsa2048`、`rsa3072`、`rsa4096`、`rsa8192` |
@@ -36,7 +36,7 @@
 | `KUBELEGO_EAB_KID` / `KUBELEGO_EAB_HMAC` | 否 | 需要 External Account Binding 的 CA。ZeroSSL 未设置这两项时，沿用 lego 的 ZeroSSL 注册方式 |
 | `KUBELEGO_NAMESPACE` | 否 | Secret 引用里省略命名空间时使用的命名空间。默认读取 Pod ServiceAccount 的命名空间 |
 
-`*.example.com` 这样的第一个域名会得到 Secret 名 `wildcard.example.com`。显式设置 `KUBELEGO_CERT_SECRET` 或 `KUBELEGO_STATE_SECRET` 时，不再使用这个默认名。
+`example.com` 会得到 Secret 名 `example-com`，`*.example.com` 会得到 `wildcard-example-com`。显式设置 `KUBELEGO_CERT_SECRET` 或 `KUBELEGO_STATE_SECRET` 时，名称原样使用，不再经过这层替换。
 
 `KUBELEGO_DNS_PROVIDER` 会原样交给 lego 的 `NewDNSChallengeProviderByName`，也就是 lego CLI 使用的那份完整工厂。名称不区分大小写，别名同样可用，例如 `cloudflare`、`route53`、`alidns`、`rfc2136`、`acme-dns`。凭证使用该 provider 自己的环境变量，例如 Cloudflare 的 `CLOUDFLARE_DNS_API_TOKEN`；Route 53 也可以走它默认的 AWS 凭证链。名称和变量的完整列表见 [lego DNS providers](https://go-acme.github.io/lego/dns/)。
 

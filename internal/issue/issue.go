@@ -1,5 +1,5 @@
 // Package issue decides when to register, obtain, or renew, and persists state
-// before a certificate request so a failed challenge does not lose the account.
+// before each step that can be interrupted.
 package issue
 
 import (
@@ -15,9 +15,14 @@ import (
 
 // ACME is the subset of the lego client used by Sync.
 type ACME interface {
-	EnsureAccount(ctx context.Context, st *state.State, email, server, kid, hmac string) (changed bool, err error)
-	Obtain(ctx context.Context, st *state.State, domains []string, keyType string) (state.Certificate, error)
-	Renew(ctx context.Context, st *state.State, keyType string) (state.Certificate, error)
+	// EnsureAccount saves the account key before registration and saves the
+	// registration before returning.
+	EnsureAccount(ctx context.Context, st *state.State, email, server, kid, hmac string, save func(context.Context, *state.State) error) error
+	// Issue creates or resumes st.Order. The order is saved before the DNS-01
+	// challenge. A failure leaves a resumable order unless the CA rejected it.
+	Issue(ctx context.Context, st *state.State, domains []string, keyType string, renew bool, save func(context.Context, *state.State) error) (state.Certificate, error)
+	// DiscardOrder clears st.Order after a best-effort DNS cleanup.
+	DiscardOrder(ctx context.Context, st *state.State, save func(context.Context, *state.State) error) error
 }
 
 // Service reconciles one certificate.
@@ -34,64 +39,84 @@ type Service struct {
 	RenewBefore time.Duration
 }
 
-// Sync loads nothing itself. The caller passes the current state and receives
-// the TLS secret payload. Account changes are saved before any certificate request.
+// Sync registers the account, issues or resumes a certificate, and returns the
+// TLS secret payload. Interrupted work stays in st so the next Sync finishes it.
 func (s Service) Sync(ctx context.Context, st *state.State) (cert.Material, error) {
 	if st == nil {
 		st = &state.State{Version: state.Version}
 	}
-	changed, err := s.ACME.EnsureAccount(ctx, st, s.Email, s.Server, s.EABKID, s.EABHMAC)
-	if err != nil {
+	if err := s.ACME.EnsureAccount(ctx, st, s.Email, s.Server, s.EABKID, s.EABHMAC, s.save); err != nil {
 		return cert.Material{}, err
 	}
-	if changed {
-		if err := s.save(ctx, st); err != nil {
-			return cert.Material{}, fmt.Errorf("save account: %w", err)
-		}
-	}
 
-	var (
-		certPEM       []byte
-		storedDomains []string
-		haveKeyType   string
-	)
-	if st.Certificate != nil {
-		certPEM = st.Certificate.Certificate
-		storedDomains = st.Certificate.Domains
-		haveKeyType = st.Certificate.KeyType
-	}
-
-	reason, err := cert.NeedsRenewal(certPEM, storedDomains, haveKeyType, s.KeyType, s.Domains, s.RenewBefore, s.now())
+	reason, err := s.reason(st)
 	if err != nil {
 		return cert.Material{}, err
 	}
 	if reason == "" {
+		if st.Order != nil {
+			slog.Info("clearing order because the stored certificate is still valid")
+			if err := s.ACME.DiscardOrder(ctx, st, s.save); err != nil {
+				return cert.Material{}, err
+			}
+		}
 		return cert.MaterialFromPEM(st.Certificate.Certificate, st.Certificate.IssuerCertificate, st.Certificate.PrivateKey)
 	}
 
 	slog.Info("requesting certificate", "reason", reason, "domains", strings.Join(s.Domains, ","))
-	issued, err := s.request(ctx, st, reason)
+	issued, err := s.ACME.Issue(ctx, st, s.Domains, s.KeyType, reason == "expiring", s.save)
 	if err != nil {
+		if mat, ok := storedMaterial(st); ok {
+			slog.Warn("certificate request failed; keeping the stored certificate", "err", err)
+			return mat, err
+		}
 		return cert.Material{}, err
 	}
+	issued.Server = s.Server
+	if len(issued.Domains) == 0 {
+		issued.Domains = append([]string(nil), s.Domains...)
+	}
 	st.Certificate = &issued
+	st.Order = nil
 	if err := s.save(ctx, st); err != nil {
-		slog.Error("certificate issued but not saved; a later attempt may request another one", "err", err)
+		slog.Error("certificate issued but not saved; the stored order will be resumed", "err", err)
 		return cert.Material{}, fmt.Errorf("save certificate: %w", err)
 	}
 	return cert.MaterialFromPEM(issued.Certificate, issued.IssuerCertificate, issued.PrivateKey)
 }
 
-func (s Service) request(ctx context.Context, st *state.State, reason string) (state.Certificate, error) {
-	if reason != "expiring" {
-		return s.ACME.Obtain(ctx, st, s.Domains, s.KeyType)
+func storedMaterial(st *state.State) (cert.Material, bool) {
+	if st == nil || st.Certificate == nil {
+		return cert.Material{}, false
 	}
-	issued, err := s.ACME.Renew(ctx, st, s.KeyType)
-	if err == nil {
-		return issued, nil
+	mat, err := cert.MaterialFromPEM(st.Certificate.Certificate, st.Certificate.IssuerCertificate, st.Certificate.PrivateKey)
+	if err != nil {
+		return cert.Material{}, false
 	}
-	slog.Warn("renew failed, obtaining a new certificate", "err", err)
-	return s.ACME.Obtain(ctx, st, s.Domains, s.KeyType)
+	return mat, true
+}
+
+func (s Service) reason(st *state.State) (string, error) {
+	var (
+		certPEM       []byte
+		storedDomains []string
+		haveKeyType   string
+		certServer    string
+	)
+	if st.Certificate != nil {
+		certPEM = st.Certificate.Certificate
+		storedDomains = st.Certificate.Domains
+		haveKeyType = st.Certificate.KeyType
+		certServer = st.Certificate.Server
+	}
+	reason, err := cert.NeedsRenewal(certPEM, storedDomains, haveKeyType, s.KeyType, s.Domains, s.RenewBefore, s.now())
+	if err != nil || reason != "" {
+		return reason, err
+	}
+	if certServer != "" && certServer != s.Server {
+		return "server", nil
+	}
+	return "", nil
 }
 
 func (s Service) save(ctx context.Context, st *state.State) error {

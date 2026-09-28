@@ -17,6 +17,7 @@ spec:
         app.kubernetes.io/name: kubelego
         app.kubernetes.io/instance: example-com
     spec:
+      terminationGracePeriodSeconds: 60
       serviceAccountName: kubelego
       containers:
         - name: kubelego

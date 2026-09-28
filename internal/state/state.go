@@ -21,6 +21,7 @@ type State struct {
 	AccountKey   []byte                `json:"accountKey,omitempty"`
 	Registration *acme.ExtendedAccount `json:"registration,omitempty"`
 	Certificate  *Certificate          `json:"certificate,omitempty"`
+	Order        *Order                `json:"order,omitempty"`
 }
 
 // Certificate is a lego certificate resource with PEM fields included.
@@ -29,12 +30,26 @@ type Certificate struct {
 	ID                string   `json:"id,omitempty"`
 	Domains           []string `json:"domains,omitempty"`
 	KeyType           string   `json:"keyType,omitempty"`
+	Server            string   `json:"server,omitempty"`
 	CertURL           string   `json:"certUrl,omitempty"`
 	CertStableURL     string   `json:"certStableUrl,omitempty"`
 	PrivateKey        []byte   `json:"privateKey,omitempty"`
 	Certificate       []byte   `json:"certificate,omitempty"`
 	IssuerCertificate []byte   `json:"issuerCertificate,omitempty"`
 	CSR               []byte   `json:"csr,omitempty"`
+}
+
+// Order is an ACME order that has not produced a stored certificate yet.
+// It is written before DNS-01 and before finalization, so a restart can
+// continue the same order instead of opening another one.
+type Order struct {
+	Location   string   `json:"location"`
+	Finalize   string   `json:"finalize,omitempty"`
+	Server     string   `json:"server,omitempty"`
+	Domains    []string `json:"domains,omitempty"`
+	KeyType    string   `json:"keyType,omitempty"`
+	PrivateKey []byte   `json:"privateKey,omitempty"`
+	CSR        []byte   `json:"csr,omitempty"`
 }
 
 // FromResource copies an issued certificate into the persisted form.

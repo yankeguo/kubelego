@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: example-com
+  namespace: kubelego
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubelego
+      app.kubernetes.io/instance: example-com
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kubelego
+        app.kubernetes.io/instance: example-com
+    spec:
+      serviceAccountName: kubelego
+      containers:
+        - name: kubelego
+          image: ghcr.io/yankeguo/kubelego:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: KUBELEGO_EMAIL
+              value: ops@example.com
+            - name: KUBELEGO_ACCEPT_TOS
+              value: "true"
+            - name: KUBELEGO_DOMAINS
+              value: example.com,*.example.com
+            - name: KUBELEGO_DNS_PROVIDER
+              value: cloudflare
+            - name: CLOUDFLARE_DNS_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflare-api
+                  key: token
+            - name: KUBELEGO_CERT_NAMESPACES
+              value: "*"
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 512Mi

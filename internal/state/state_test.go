@@ -22,8 +22,14 @@ func TestRoundTrip(t *testing.T) {
 			ID:          "example.com",
 			Domains:     []string{"example.com", "*.example.com"},
 			KeyType:     string(certcrypto.EC256),
+			Server:      "https://acme-v02.api.letsencrypt.org/directory",
 			PrivateKey:  []byte("key"),
 			Certificate: []byte("cert"),
+		},
+		Order: &Order{
+			Location: "https://acme.example/order/1",
+			Domains:  []string{"example.com"},
+			KeyType:  string(certcrypto.EC256),
 		},
 	}
 
@@ -38,8 +44,11 @@ func TestRoundTrip(t *testing.T) {
 	if got.Email != original.Email || got.Registration.Location != original.Registration.Location {
 		t.Fatalf("account did not round-trip: %+v", got)
 	}
-	if string(got.Certificate.Certificate) != "cert" || got.Certificate.KeyType != string(certcrypto.EC256) {
+	if string(got.Certificate.Certificate) != "cert" || got.Certificate.KeyType != string(certcrypto.EC256) || got.Certificate.Server == "" {
 		t.Fatalf("certificate did not round-trip: %+v", got.Certificate)
+	}
+	if got.Order == nil || got.Order.Location != original.Order.Location {
+		t.Fatalf("order did not round-trip: %+v", got.Order)
 	}
 
 	res := got.Certificate.Resource()

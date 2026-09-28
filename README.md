@@ -8,10 +8,12 @@
 
 进程启动后会：
 
-1. 从状态 Secret 恢复 ACME 账号；没有账号时注册，并在发起证书申请之前把账号写回 Secret。
-2. 证书缺失、域名或密钥类型变化时重新申请；距离过期时间小于 `KUBELEGO_RENEW_BEFORE` 时续期。续期失败会再申请一张新证书。
+1. 从状态 Secret 恢复 ACME 账号。没有账号私钥时先生成并写入 Secret，再注册；注册结果也会先落盘，然后才申请证书。
+2. 证书缺失、域名或密钥类型变化时重新申请；距离过期时间小于 `KUBELEGO_RENEW_BEFORE` 时续期。订单 URL、证书私钥和 CSR 会在 DNS-01 之前写入状态 Secret。
 3. 把证书写成 `kubernetes.io/tls` Secret。`tls.crt` 是叶子证书加中间证书，`tls.key` 是私钥，`ca.crt` 是 CA 返回的签发证书（中间证书，CA 同时返回根证书时也包含根证书）。
 4. 按命名空间通配把同一份 TLS Secret 复制出去，并删掉不再匹配、且由 kubelego 创建的副本。
+
+进程在这些步骤的任意一点停止，包括收到 SIGTERM 或被直接杀掉，重启后都会从状态 Secret 接着做完。账号私钥不会重新生成。未完成的订单会继续校验或下载；订单失效、授权失败，或者域名、密钥类型、ACME 目录变了，才会丢掉它并在下一轮重新申请。证书已经签发但还没写进 TLS Secret 时，下一轮只发布，不再向 CA 下单。续期还没成功时，已经保存的证书会继续发布。SIGTERM 之后仍会尽量把已经得到的状态和 TLS Secret 写完。示例 Deployment 的 `terminationGracePeriodSeconds` 是 60。
 
 默认每小时对账一次。命名空间列表非空时，还会监听 Namespace 变化，新命名空间不用等到下一轮续期检查就会拿到副本。`replicas` 请保持为 1，示例里使用 `Recreate`，避免两个进程同时向 CA 下单。
 
@@ -44,7 +46,7 @@
 
 ## Secret
 
-状态 Secret 是 Opaque，数据键为 `state.json`，里面有 ACME 账号私钥、注册信息和已签发证书。TLS Secret 才是工作负载要挂载的对象。
+状态 Secret 是 Opaque，数据键为 `state.json`，里面有 ACME 账号私钥、注册信息、未完成的订单和已签发证书。TLS Secret 才是工作负载要挂载的对象。
 
 kubelego 只会更新带 `app.kubernetes.io/managed-by=kubelego` 的 Secret。同名但不是它创建的 Secret 会保留，并在日志里报错。复制到其他命名空间时使用相同的 Secret 名称；副本的 `kubelego.io/source` 指向主 Secret。通配不再匹配时，只删除带这个来源注解的副本。
 

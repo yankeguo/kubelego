@@ -49,7 +49,9 @@ func Run(ctx context.Context, cfg config.Config) error {
 				Timeout:   cfg.DNSTimeout,
 			},
 			Save: func(ctx context.Context, st *state.State) error {
-				return kube.SaveState(ctx, client, cfg.StateSecret, cfg.Domains, st)
+				saveCtx, cancel := persistContext(ctx)
+				defer cancel()
+				return kube.SaveState(saveCtx, client, cfg.StateSecret, cfg.Domains, st)
 			},
 			Email:       cfg.Email,
 			Server:      cfg.Server,
@@ -83,12 +85,17 @@ func (r *runner) run(ctx context.Context) error {
 		return err
 	}
 	for {
-		if err := r.reconcile(ctx); err != nil {
+		err := r.reconcile(ctx)
+		if err != nil && ctx.Err() == nil {
 			slog.Error("reconcile failed", "err", err)
 			if err := r.wait(ctx, time.Minute); err != nil {
 				return nil
 			}
 			continue
+		}
+		if err != nil {
+			slog.Info("reconcile stopped", "err", err)
+			return nil
 		}
 		if err := r.wait(ctx, r.cfg.Interval); err != nil {
 			return nil
@@ -102,19 +109,45 @@ func (r *runner) reconcile(ctx context.Context) error {
 		return err
 	}
 	mat, err := r.svc.Sync(ctx, st)
-	if err != nil {
-		return err
+	if len(mat.TLSCrt) > 0 {
+		if pubErr := r.publish(ctx, mat); pubErr != nil {
+			if err == nil {
+				return pubErr
+			}
+			slog.Error("publish failed", "err", pubErr)
+		}
 	}
-	r.setMaterial(mat)
-	return kube.Publish(ctx, r.client, r.cfg.CertSecret, r.cfg.Domains, r.cfg.Namespaces, mat)
+	return err
 }
 
 func (r *runner) syncOnly(ctx context.Context) error {
-	mat, ok := r.current()
-	if !ok {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.ready {
 		return nil
 	}
-	return kube.Publish(ctx, r.client, r.cfg.CertSecret, r.cfg.Domains, r.cfg.Namespaces, mat)
+	return r.publishLocked(ctx)
+}
+
+func (r *runner) publish(ctx context.Context, mat cert.Material) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.material = mat
+	r.ready = true
+	return r.publishLocked(ctx)
+}
+
+func (r *runner) publishLocked(ctx context.Context) error {
+	// Publishing is the last step and is safe to finish after SIGTERM.
+	// The lock keeps a namespace sync from writing an older certificate
+	// over the one this reconcile just stored.
+	pubCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 45*time.Second)
+	defer cancel()
+	return kube.Publish(pubCtx, r.client, r.cfg.CertSecret, r.cfg.Domains, r.cfg.Namespaces, r.material)
+}
+
+func persistContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 }
 
 func (r *runner) watchNamespaces(ctx context.Context) error {
@@ -156,17 +189,4 @@ func (r *runner) wait(ctx context.Context, delay time.Duration) error {
 			}
 		}
 	}
-}
-
-func (r *runner) setMaterial(mat cert.Material) {
-	r.mu.Lock()
-	r.material = mat
-	r.ready = true
-	r.mu.Unlock()
-}
-
-func (r *runner) current() (cert.Material, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.material, r.ready
 }

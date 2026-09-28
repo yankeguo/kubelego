@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,11 +21,20 @@ import (
 
 func TestSyncSavesAccountBeforeObtain(t *testing.T) {
 	fake := &fakeACME{}
-	var calls []string
+	var stages []string
 	svc := Service{
 		ACME: fake,
-		Save: func(context.Context, *state.State) error {
-			calls = append(calls, "save")
+		Save: func(_ context.Context, st *state.State) error {
+			switch {
+			case st.Registration == nil:
+				stages = append(stages, "account-key")
+			case st.Order != nil && st.Certificate == nil:
+				stages = append(stages, "order")
+			case st.Certificate != nil && st.Order == nil:
+				stages = append(stages, "certificate")
+			default:
+				stages = append(stages, "account")
+			}
 			fake.saves++
 			return nil
 		},
@@ -38,14 +48,15 @@ func TestSyncSavesAccountBeforeObtain(t *testing.T) {
 	if _, err := svc.Sync(context.Background(), &state.State{Version: state.Version}); err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 2 || calls[0] != "save" || calls[1] != "save" {
-		t.Fatalf("saves = %#v, want account save then certificate save", calls)
+	want := []string{"account-key", "account", "order", "certificate"}
+	if strings.Join(stages, ",") != strings.Join(want, ",") {
+		t.Fatalf("saves = %#v, want %#v", stages, want)
 	}
-	if fake.obtained != 1 || fake.renewed != 0 {
-		t.Fatalf("obtain=%d renew=%d", fake.obtained, fake.renewed)
+	if fake.created != 1 || fake.renewed != 0 || fake.resumed != 0 {
+		t.Fatalf("created=%d resumed=%d renew=%d", fake.created, fake.resumed, fake.renewed)
 	}
-	if fake.obtainAfterSaves != 1 {
-		t.Fatalf("obtain happened after %d saves, want 1", fake.obtainAfterSaves)
+	if fake.issueAfterSaves < 2 {
+		t.Fatalf("issue happened after %d saves, want the account saved first", fake.issueAfterSaves)
 	}
 }
 
@@ -79,8 +90,8 @@ func TestSyncRenewsExpiringCertificate(t *testing.T) {
 	if _, err := svc.Sync(context.Background(), st); err != nil {
 		t.Fatal(err)
 	}
-	if fake.renewed != 1 || fake.obtained != 0 {
-		t.Fatalf("obtain=%d renew=%d", fake.obtained, fake.renewed)
+	if fake.renewed != 1 || fake.created != 1 || fake.resumed != 0 {
+		t.Fatalf("created=%d resumed=%d renew=%d", fake.created, fake.resumed, fake.renewed)
 	}
 }
 
@@ -117,14 +128,14 @@ func TestSyncKeepsFreshCertificate(t *testing.T) {
 	if _, err := svc.Sync(context.Background(), st); err != nil {
 		t.Fatal(err)
 	}
-	if fake.obtained != 0 || fake.renewed != 0 || saves != 0 {
-		t.Fatalf("obtain=%d renew=%d saves=%d", fake.obtained, fake.renewed, saves)
+	if fake.created != 0 || fake.renewed != 0 || fake.resumed != 0 || saves != 0 {
+		t.Fatalf("created=%d renew=%d resumed=%d saves=%d", fake.created, fake.renewed, fake.resumed, saves)
 	}
 }
 
-func TestSyncFallsBackToObtainWhenRenewFails(t *testing.T) {
+func TestSyncKeepsOrderWhenIssueStops(t *testing.T) {
 	leaf, issuer, key := mustChain(t, time.Now().Add(time.Hour))
-	fake := &fakeACME{renewErr: errors.New("order gone"), leaf: leaf, issuer: issuer, key: key}
+	fake := &fakeACME{issueErr: errors.New("dns timeout"), leaf: leaf, issuer: issuer, key: key}
 	svc := Service{
 		ACME:        fake,
 		Save:        func(context.Context, *state.State) error { return nil },
@@ -143,55 +154,148 @@ func TestSyncFallsBackToObtainWhenRenewFails(t *testing.T) {
 		Certificate: &state.Certificate{
 			Domains:           []string{"example.com"},
 			KeyType:           "EC256",
+			Server:            svc.Server,
 			Certificate:       leaf,
 			IssuerCertificate: issuer,
 			PrivateKey:        key,
 		},
 	}
+	mat, err := svc.Sync(context.Background(), st)
+	if err == nil || !strings.Contains(err.Error(), "dns timeout") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(mat.TLSCrt) == 0 || len(mat.TLSKey) == 0 {
+		t.Fatal("stored certificate was not returned for publish")
+	}
+	if st.Order == nil || st.Order.Location == "" {
+		t.Fatal("order was not checkpointed")
+	}
+	if string(st.Certificate.Certificate) != string(leaf) {
+		t.Fatal("stored certificate was replaced before the new one was saved")
+	}
+	if fake.renewed != 1 || fake.created != 1 || fake.resumed != 0 {
+		t.Fatalf("created=%d resumed=%d renew=%d", fake.created, fake.resumed, fake.renewed)
+	}
+
+	fake.issueErr = nil
 	if _, err := svc.Sync(context.Background(), st); err != nil {
 		t.Fatal(err)
 	}
-	if fake.renewed != 1 || fake.obtained != 1 {
-		t.Fatalf("obtain=%d renew=%d", fake.obtained, fake.renewed)
+	if fake.created != 1 || fake.resumed != 1 || fake.renewed != 2 {
+		t.Fatalf("created=%d resumed=%d renew=%d", fake.created, fake.resumed, fake.renewed)
+	}
+	if st.Order != nil {
+		t.Fatal("finished order was kept")
+	}
+}
+
+func TestSyncStoppedIssueDoesNotOpenAnotherOrder(t *testing.T) {
+	fake := &fakeACME{cancelAfterCheckpoint: true}
+	svc := Service{
+		ACME:        fake,
+		Save:        func(context.Context, *state.State) error { return nil },
+		Email:       "ops@example.com",
+		Server:      "https://acme.example/directory",
+		Domains:     []string{"example.com"},
+		KeyType:     "EC256",
+		RenewBefore: time.Hour,
+	}
+	st := &state.State{
+		Version:      state.Version,
+		Email:        svc.Email,
+		Server:       svc.Server,
+		AccountKey:   []byte("already"),
+		Registration: &legocme.ExtendedAccount{Location: "https://acme.example/acct/1"},
+	}
+	_, err := svc.Sync(context.Background(), st)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if st.Order == nil || fake.created != 1 {
+		t.Fatalf("order=%v created=%d", st.Order, fake.created)
+	}
+
+	fake.cancelAfterCheckpoint = false
+	if _, err := svc.Sync(context.Background(), st); err != nil {
+		t.Fatal(err)
+	}
+	if fake.created != 1 || fake.resumed != 1 {
+		t.Fatalf("created=%d resumed=%d", fake.created, fake.resumed)
 	}
 }
 
 type fakeACME struct {
-	obtained         int
-	renewed          int
-	obtainAfterSaves int
-	saves            int
-	renewErr         error
-	leaf             []byte
-	issuer           []byte
-	key              []byte
+	created               int
+	resumed               int
+	renewed               int
+	issueAfterSaves       int
+	saves                 int
+	issueErr              error
+	cancelAfterCheckpoint bool
+	leaf                  []byte
+	issuer                []byte
+	key                   []byte
 }
 
-func (f *fakeACME) EnsureAccount(_ context.Context, st *state.State, email, server, _, _ string) (bool, error) {
+func (f *fakeACME) EnsureAccount(ctx context.Context, st *state.State, email, server, _, _ string, save func(context.Context, *state.State) error) error {
 	if st.Registration != nil && len(st.AccountKey) > 0 && st.Email == email && st.Server == server {
-		return false, nil
+		return nil
+	}
+	if len(st.AccountKey) == 0 {
+		st.AccountKey = []byte("generated")
+		st.Registration = nil
+		st.Email = email
+		st.Server = server
+		if err := save(ctx, st); err != nil {
+			return err
+		}
 	}
 	st.Email = email
 	st.Server = server
-	if len(st.AccountKey) == 0 {
-		st.AccountKey = []byte("generated")
-	}
 	st.Registration = &legocme.ExtendedAccount{Location: "https://acme.example/acct/1"}
-	return true, nil
+	return save(ctx, st)
 }
 
-func (f *fakeACME) Obtain(context.Context, *state.State, []string, string) (state.Certificate, error) {
-	f.obtained++
-	f.obtainAfterSaves = f.saves
-	return f.issued(), nil
-}
-
-func (f *fakeACME) Renew(context.Context, *state.State, string) (state.Certificate, error) {
-	f.renewed++
-	if f.renewErr != nil {
-		return state.Certificate{}, f.renewErr
+func (f *fakeACME) Issue(ctx context.Context, st *state.State, domains []string, keyType string, renew bool, save func(context.Context, *state.State) error) (state.Certificate, error) {
+	if err := ctx.Err(); err != nil {
+		return state.Certificate{}, err
+	}
+	if renew {
+		f.renewed++
+	}
+	f.issueAfterSaves = f.saves
+	if st.Order == nil {
+		f.created++
+		st.Order = &state.Order{
+			Location:   "https://acme.example/order/1",
+			Finalize:   "https://acme.example/order/1/finalize",
+			Server:     st.Server,
+			Domains:    append([]string(nil), domains...),
+			KeyType:    keyType,
+			PrivateKey: []byte("pending-key"),
+			CSR:        []byte("csr"),
+		}
+		if err := save(ctx, st); err != nil {
+			return state.Certificate{}, err
+		}
+	} else {
+		f.resumed++
+	}
+	if f.cancelAfterCheckpoint {
+		return state.Certificate{}, context.Canceled
+	}
+	if f.issueErr != nil {
+		return state.Certificate{}, f.issueErr
 	}
 	return f.issued(), nil
+}
+
+func (f *fakeACME) DiscardOrder(ctx context.Context, st *state.State, save func(context.Context, *state.State) error) error {
+	st.Order = nil
+	if save == nil {
+		return nil
+	}
+	return save(ctx, st)
 }
 
 func (f *fakeACME) issued() state.Certificate {

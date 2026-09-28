@@ -7,12 +7,15 @@ func TestFromDomain(t *testing.T) {
 		domain string
 		want   string
 	}{
-		{domain: "example.com", want: "example.com"},
-		{domain: "*.example.com", want: "wildcard.example.com"},
-		{domain: "EXAMPLE.COM", want: "example.com"},
-		{domain: "_foo.example.com", want: "foo.example.com"},
+		{domain: "example.com", want: "example-com"},
+		{domain: "*.example.com", want: "wildcard-example-com"},
+		{domain: "EXAMPLE.COM", want: "example-com"},
+		{domain: "_foo.example.com", want: "foo-example-com"},
 		{domain: "", want: "certificate"},
-		{domain: "*.*.example.com", want: "wildcard.wildcard.example.com"},
+		{domain: "*.*.example.com", want: "wildcard-wildcard-example-com"},
+		{domain: "foo.bar.example.com", want: "foo-bar-example-com"},
+		{domain: "a..b", want: "a-b"},
+		{domain: "foo-bar.com", want: "foo-bar-com"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.domain, func(t *testing.T) {

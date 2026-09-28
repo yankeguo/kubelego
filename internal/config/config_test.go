@@ -22,10 +22,10 @@ func TestParseDefaultsNameFromFirstDomain(t *testing.T) {
 	if strings.Join(cfg.Domains, ",") != "example.com,*.example.com" {
 		t.Fatalf("domains = %#v", cfg.Domains)
 	}
-	if cfg.CertSecret.String() != "kubelego/example.com" {
+	if cfg.CertSecret.String() != "kubelego/example-com" {
 		t.Fatalf("cert secret = %s", cfg.CertSecret)
 	}
-	if cfg.StateSecret.String() != "kubelego/example.com-state" {
+	if cfg.StateSecret.String() != "kubelego/example-com-state" {
 		t.Fatalf("state secret = %s", cfg.StateSecret)
 	}
 	if cfg.Server == "" || cfg.KeyType != "EC256" || cfg.RenewBefore != 30*24*time.Hour || cfg.Interval != time.Hour {

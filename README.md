@@ -22,7 +22,7 @@
 | `KUBELEGO_EMAIL` | 是 | ACME 账号邮箱 |
 | `KUBELEGO_ACCEPT_TOS` | 是 | 必须为 `true`，表示接受 CA 服务条款 |
 | `KUBELEGO_DOMAINS` | 是 | 逗号分隔的域名。第一个域名作为证书 Common Name，并生成默认 Secret 名 |
-| `KUBELEGO_DNS_PROVIDER` | 是 | lego DNS provider 名称，例如 `cloudflare`、`route53`、`alidns` |
+| `KUBELEGO_DNS_PROVIDER` | 是 | lego 的 DNS provider 名称，与 `lego --dns` 相同，包含全部内置 provider 和别名 |
 | `KUBELEGO_STATE_SECRET` | 否 | 保存账号和证书状态的 Secret，`name` 或 `namespace/name`。默认 `<当前命名空间>/<第一个域名>-state` |
 | `KUBELEGO_CERT_SECRET` | 否 | TLS Secret，格式同上。默认 `<当前命名空间>/<第一个域名>` |
 | `KUBELEGO_CERT_NAMESPACES` | 否 | 逗号分隔的命名空间通配。`*` 匹配任意长度，`?` 匹配一个字符。`*` 表示所有命名空间 |
@@ -38,7 +38,9 @@
 
 `*.example.com` 这样的第一个域名会得到 Secret 名 `wildcard.example.com`。显式设置 `KUBELEGO_CERT_SECRET` 或 `KUBELEGO_STATE_SECRET` 时，不再使用这个默认名。
 
-DNS provider 的凭证使用 lego 自己的环境变量，例如 Cloudflare 的 `CLOUDFLARE_DNS_API_TOKEN`。完整列表见 [lego DNS providers](https://go-acme.github.io/lego/dns/)。
+`KUBELEGO_DNS_PROVIDER` 会原样交给 lego 的 `NewDNSChallengeProviderByName`，也就是 lego CLI 使用的那份完整工厂。名称不区分大小写，别名同样可用，例如 `cloudflare`、`route53`、`alidns`、`rfc2136`、`acme-dns`。凭证使用该 provider 自己的环境变量，例如 Cloudflare 的 `CLOUDFLARE_DNS_API_TOKEN`；Route 53 也可以走它默认的 AWS 凭证链。名称和变量的完整列表见 [lego DNS providers](https://go-acme.github.io/lego/dns/)。
+
+`manual` 需要交互输入，在 Pod 里无法完成。`exec` 已包含在二进制里，但还要镜像里存在 `EXEC_PATH` 指向的程序；当前镜像基于 distroless，没有 shell。
 
 ## Secret
 

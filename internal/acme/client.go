@@ -177,6 +177,8 @@ func (c *Client) prepareDNS() error {
 }
 
 func (c *Client) challengeProvider() (challenge.Provider, error) {
+	// Same factory as the lego CLI, including every built-in provider and alias.
+	// Provider credentials stay in that provider's own environment variables.
 	provider, err := dns.NewDNSChallengeProviderByName(c.Provider)
 	if err != nil {
 		return nil, fmt.Errorf("dns provider %q: %w", c.Provider, err)
